@@ -16,9 +16,10 @@
 
 // TODO:
 // update icons
+// think about how to best name this app
 
 definition(
-    name: "My Auth Test",
+    name: "Google Actions",
     namespace: "germasch",
     author: "Kai Germaschewski",
     description: "Interface with Actions on Google / Google Assistant",
