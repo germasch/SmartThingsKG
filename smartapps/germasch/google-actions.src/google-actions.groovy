@@ -21,6 +21,7 @@
 definition(
     name: "Google Actions",
     namespace: "germasch",
+    singleInstance: true,
     author: "Kai Germaschewski",
     description: "Interface with Actions on Google / Google Assistant",
     category: "Convenience",
@@ -31,22 +32,16 @@ definition(
 
 
 preferences {
+	section { paragraph "Switches/Dimmers/Colored lights" }
 	section ("Allow external service to control these things...") {
-    	input "switches", "capability.switch", multiple: true, required: true
+        	input "switches", "capability.switch", title: "Choose Switches/Lights (on/off)", multiple: true
+            input "dimmers", "capability.switchLevel", title: "Choose Dimmers (on/off/level)", multiple: true
 	}
 }
 
 mappings {
-	path("/switches") {
-		action: [
-      		GET: "listSwitches"
-    	]
-  	}
-  	path("/switches/:command") {
-    	action: [
-      		PUT: "updateSwitches"
-    	]
-  	}
+	path("/session")           { action: [ POST: "sessionREST" ] }
+	path("/action")            { action: [ POST: "actionREST"  ] }
 }
 
 def installed() {
@@ -64,34 +59,87 @@ def updated() {
 
 def initialize() {
 	// TODO: subscribe to attributes, devices, locations, etc.
+    if (!state.accessToken) log.error "Access token not defined. Ensure OAuth is enabled in the SmartThings IDE."
 }
 
-// returns a list like
-// [[name: "kitchen lamp", value: "off"], [name: "bathroom", value: "on"]]
-def listSwitches() {
+def sessionREST() {
+	log.debug "session: $request.JSON"
+   	def body = request.JSON
+    def sessionId = body.sessionId
+    def entities = [[name: "st_switch", devices: switches],
+    	            [name: "st_dimmer", devices: dimmers]]
     def resp = []
-    switches.each {
-      resp << [name: it.displayName, value: it.currentValue("switch")]
+    entities.each { entity ->
+        resp << [
+            sessionId: sessionId,
+        	name: entity.name,
+        	extend: false,
+            entries: entity.devices.collect {
+        		[value: it.displayName, synonyms: [it.displayName]]
+        	}
+     	]
     }
+    log.debug "session: ${resp}"
     return resp
 }
 
-def updateSwitches() {
-    // use the built-in request object to get the command parameter
-    def command = params.command
-
-    // all switches have the command
-    // execute the command on all switches
-    // (note we can do this on the array - the command will be invoked on every element
-    switch(command) {
-        case "on":
-            switches.on()
-            break
-        case "off":
-            switches.off()
-            break
-        default:
-            httpError(400, "$command is not a valid command for all switches specified")
+def actionREST() {
+	log.debug "actionREST: $request.JSON"
+	def result = request.JSON
+    switch (result.action) {
+		case 'turn-on-off': return switchREST(result)
+    	case 'list-switches': return listSwitchesREST()
     }
+    httpError(404, "action not found")
 }
+
+def switchREST(result) {
+	log.debug "switchREST: $result"
+    def device_names = result.parameters.devices
+    def onoff = result.parameters."on-off"
+	// FIXME check args (e.g. empty device_names)
+    def devices = device_names.collect { name ->
+	  // log.debug "name $name switches $switches"
+      switches.find {
+        // log.debug "it: $it.displayName $name"
+        name.equalsIgnoreCase(it.displayName)
+      }
+    }
+    log.debug "switchREST: devices: $devices onoff: $onoff"
+    if (onoff == "on") {
+    	devices.each { it.on() }
+   	} else {
+    	devices.each { it.off() }
+    }
+    def devices_speech = ""
+    device_names.each { 
+    	if (it == device_names.last() && it != device_names.first()) {
+		   	devices_speech += "and "
+        }
+        devices_speech += "the ${it} " 
+    }
+	
+    def resp = [ speech: "Turning ${onoff} ${devices_speech}." ]
+    log.debug "switchREST: resp ${resp}"
+    return resp
+}
+
+def listSwitchesREST() {
+	log.debug "listSwitchesREST: ${switches}"
+	def speech = "Here are your switches. ";
+	switches.each {
+//		log.debug "switch: ${it.displayName} ${it.currentValue('switch')} supported ${it.supportedAttributes} capabilities ${it.capabilities}"
+//      log.debug "properties ${it.properties} device ${it.device} device.properties ${it.device.properties}"
+//      log.debug "group: ${it.device.groupId}"
+//	    def attrs = it.getSupportedAttributes()
+//        attrs.each { attr ->
+//        	log.debug "attr: $attr getValues ${attr.getValues()}"
+//        }
+		speech += it.displayName + " is " + it.currentValue("switch") + ". ";
+	}
+
+    log.debug "listSwitchesREST: speech ${speech}"
+    return [ speech: speech ]
+}
+
 // TODO: implement event handlers
