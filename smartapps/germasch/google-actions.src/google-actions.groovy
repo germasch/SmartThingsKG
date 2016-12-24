@@ -29,6 +29,9 @@ definition(
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
     iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
     oauth: true)
+{
+	appSetting "API.AI client access token"
+}
 
 
 preferences {
@@ -66,14 +69,12 @@ def initialize() {
 def apiAiRequest(endpoint, body) {
     def APIAI_HOSTNAME = "api.api.ai"
 	def APIAI_ENDPOINT = "/v1/"
-	// FIXME, don't hardcode
-	def APIAI_CLIENT_ACCESS_TOKEN = "cc9f061f33074252aa9e3ebcdf8bcd34"
 
     def params = [
-    	uri: 'https://' + APIAI_HOSTNAME + APIAI_ENDPOINT + endpoint,
+    	uri: "https://" + APIAI_HOSTNAME + APIAI_ENDPOINT + endpoint,
 	    headers: [
-			'Authorization': 'Bearer ' + APIAI_CLIENT_ACCESS_TOKEN,
-			'api-request-source': 'groovy',
+			"Authorization": 'Bearer ' + appSettings."API.AI client access token",
+			"api-request-source": 'groovy'
 	    ],
         body: body
     ]
@@ -110,12 +111,19 @@ def sessionREST() {
 
 def actionREST() {
 	log.debug "actionREST: $request.JSON"
-	def result = request.JSON
+	def result = request.JSON.result
     switch (result.action) {
-		case 'turn-on-off': return switchREST(result)
-    	case 'list-switches': return listSwitchesREST()
+        case "welcome": return welcomeREST(result)
+		case "turn-on-off": return switchREST(result)
+    	case "list-switches": return listSwitchesREST()
     }
     httpError(404, "action not found")
+}
+
+def welcomeREST(result) {
+	def speech = "Welcome to SmartThings at your $location.name! How can I help you?" 
+    def resp = [ speech: speech ]
+    return resp
 }
 
 def switchREST(result) {
