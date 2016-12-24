@@ -62,15 +62,39 @@ def initialize() {
     if (!state.accessToken) log.error "Access token not defined. Ensure OAuth is enabled in the SmartThings IDE."
 }
 
+// FIXME, use async http API
+def apiAiRequest(endpoint, body) {
+    def APIAI_HOSTNAME = "api.api.ai"
+	def APIAI_ENDPOINT = "/v1/"
+	// FIXME, don't hardcode
+	def APIAI_CLIENT_ACCESS_TOKEN = "cc9f061f33074252aa9e3ebcdf8bcd34"
+
+    def params = [
+    	uri: 'https://' + APIAI_HOSTNAME + APIAI_ENDPOINT + endpoint,
+	    headers: [
+			'Authorization': 'Bearer ' + APIAI_CLIENT_ACCESS_TOKEN,
+			'api-request-source': 'groovy',
+	    ],
+        body: body
+    ]
+    
+    httpPostJson(params) { response ->
+		log.debug "response data: ${response.data}"
+        if (response.data.status.code < 200 || response.data.status.code >= 300) {
+        	log.error "session: unexpected status $response.data.status.code"
+		}
+    }
+}
+
 def sessionREST() {
 	log.debug "session: $request.JSON"
    	def body = request.JSON
     def sessionId = body.sessionId
     def entities = [[name: "st_switch", devices: switches],
     	            [name: "st_dimmer", devices: dimmers]]
-    def resp = []
+    def userEntities = []
     entities.each { entity ->
-        resp << [
+        userEntities << [
             sessionId: sessionId,
         	name: entity.name,
         	extend: false,
@@ -79,8 +103,9 @@ def sessionREST() {
         	}
      	]
     }
-    log.debug "session: ${resp}"
-    return resp
+    
+    log.debug "session: userEntities $userEntities"
+    apiAiRequest("userEntities", userEntities)
 }
 
 def actionREST() {
