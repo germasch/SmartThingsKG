@@ -43,7 +43,6 @@ preferences {
 }
 
 mappings {
-	path("/session")           { action: [ POST: "sessionREST" ] }
 	path("/action")            { action: [ POST: "actionREST"  ] }
 }
 
@@ -87,15 +86,12 @@ def apiAiRequest(endpoint, body) {
     }
 }
 
-def sessionREST() {
-	log.debug "session: $request.JSON"
-   	def body = request.JSON
-    def sessionId = body.sessionId
+def newSession(sessionId) {
+	log.debug("newSession sessionId: $sessionId")
     def entities = [[name: "st_switch", devices: switches],
     	            [name: "st_dimmer", devices: dimmers]]
-    def userEntities = []
-    entities.each { entity ->
-        userEntities << [
+    def userEntities = entities.collect { entity ->
+        [
             sessionId: sessionId,
         	name: entity.name,
         	extend: false,
@@ -105,29 +101,44 @@ def sessionREST() {
      	]
     }
     
-    log.debug "session: userEntities $userEntities"
+    log.debug "newSession: userEntities $userEntities"
     apiAiRequest("userEntities", userEntities)
 }
 
 def actionREST() {
 	log.debug "actionREST: $request.JSON"
+    def context_aog = request.JSON.result.contexts.find {
+    	it.name == "_actions_on_google_"
+    }
+    if (!context_aog) {
+    	newSession(request.JSON.sessionId)
+    } else if (!context_aog.parameters.st_endpoint_uri) {
+    	log.warn "_actions_on_google_ context found, but no st_endpoint_uri!"
+    	newSession(request.JSON.sessionId)
+    }
+
 	def result = request.JSON.result
-    switch (result.action) {
+    log.info "actionREST: ${result?.action}"
+    switch (result?.action) {
         case "welcome": return welcomeREST(result)
-		case "turn-on-off": return switchREST(result)
+		case "on-off": return onoffREST(result)
     	case "list-switches": return listSwitchesREST()
     }
     httpError(404, "action not found")
 }
 
-def welcomeREST(result) {
-	def speech = "Welcome to SmartThings at your $location.name! How can I help you?" 
-    def resp = [ speech: speech ]
+def makeResponse(speech) {
+	def resp = [ speech: speech ]
+    log.info "makeResponse: $resp"
     return resp
 }
 
-def switchREST(result) {
-	log.debug "switchREST: $result"
+def welcomeREST(result) {
+	def speech = "Welcome to SmartThings at your $location.name! How can I help you?" 
+    return makeResponse(speech)
+}
+
+def onoffREST(result) {
     def device_names = result.parameters.devices
     def onoff = result.parameters."on-off"
 	// FIXME check args (e.g. empty device_names)
@@ -138,7 +149,7 @@ def switchREST(result) {
         name.equalsIgnoreCase(it.displayName)
       }
     }
-    log.debug "switchREST: devices: $devices onoff: $onoff"
+    log.debug "onoffREST: devices: $devices onoff: $onoff"
     if (onoff == "on") {
     	devices.each { it.on() }
    	} else {
@@ -152,9 +163,7 @@ def switchREST(result) {
         devices_speech += "the ${it} " 
     }
 	
-    def resp = [ speech: "Turning ${onoff} ${devices_speech}." ]
-    log.debug "switchREST: resp ${resp}"
-    return resp
+    return makeResponse("Turning ${onoff} ${devices_speech}.")
 }
 
 def listSwitchesREST() {
@@ -171,8 +180,7 @@ def listSwitchesREST() {
 		speech += it.displayName + " is " + it.currentValue("switch") + ". ";
 	}
 
-    log.debug "listSwitchesREST: speech ${speech}"
-    return [ speech: speech ]
+	return makeResponse(speech)
 }
 
 // TODO: implement event handlers
