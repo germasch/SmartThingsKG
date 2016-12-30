@@ -35,8 +35,27 @@ definition(
 	appSetting "API.AI client access token"
 }
 
+
+// FIXME: use / don't use parentheses for href
+
 preferences(oauthPage: "pageDevices") {
-    page(name: "pageMain", title: "${textAppName()}", install: true) {
+	page(name: "pageMain")
+	page(name: "pageDevices", title: "Select devices") {
+		section("Allow ${textAppName()} to control the following devices.") {
+     	 	input "switches", "capability.switch", title: "Choose Switches/Lights (on/off)", required: false, multiple: true
+        	input "dimmers", "capability.switchLevel", title: "Choose Dimmers (on/off/level)", required: false, multiple: true
+            input "coloredLights", "capability.actuator", title: "Choose Colored Lights (on/off/level/color)", required: false, multiple: true
+	    }
+    }
+    page(name: "pageManageGroups")
+    	page(name: "pageRenameGroup")
+        page(name: "pageRenameGroupFinal")
+    page(name: "pageManageDevices")
+    page(name: "pageAbout")
+}
+
+def pageMain() {
+    dynamicPage(name: "pageMain", title: "${textAppName()}", install: true) {
     	section("Settings") {
 	        href(name: "hrefDevices", title: "Select devices", required: false,
     			description: "tap to select devices that ${textAppName()} can control",
@@ -51,28 +70,67 @@ preferences(oauthPage: "pageDevices") {
             	page: "pageAbout")
         }
     }
-	page(name: "pageDevices", title: "Select devices") {
-		section("Allow ${textAppName()} to control the following devices.") {
-     	 	input "switches", "capability.switch", title: "Choose Switches/Lights (on/off)", required: false, multiple: true
-        	input "dimmers", "capability.switchLevel", title: "Choose Dimmers (on/off/level)", required: false, multiple: true
-            input "coloredLights", "capability.actuator", title: "Choose Colored Lights (on/off/level/color)", required: false, multiple: true
-	    }
-    }
-    page(name: "pageManageGroups")
-    page(name: "pageManageDevices")
-    page(name: "pageAbout")
 }
 
-def pageManageGroups() {
+
+def pageManageGroups(params) {
+	log.debug "pageManageGroups params $params"
+	log.debug "pageManageGroups settings $settings"
 	dynamicPage(name: "pageManageGroups", title: "Manage groups / rooms") {
-    	// FIXME, do own groups
+    	// FIXME, do own groups, too
 		state.groups.each { group ->
+        	if (!group.id) {
+            	return
+            }
         	def name = group.name ? group.name : "<none>"
     		section(name) {
-            	paragraph "name: $group.name"
-                input name: "group.Name", type: "text", title: "Rename",
-                	required: false, defaultValue: group.name
-            }
+                def deviceNames = group.devices.collect { deviceFromId(it).name }
+            	paragraph deviceNames.join("\n")
+				href name: "hrefRenameGroup", title: "Rename", required: false,
+                	description: "", //tap to rename this group",
+                	page: "pageRenameGroup", params: [ pref: ["id": group.id, name: group.name ] ]
+        	}
+        }
+    }
+}
+
+def pageRenameGroup(params) {
+	if (params.pref) {
+    	state.pref = params.pref
+    }
+    log.debug "pageRenameGroup settings: $settings"
+    if (!params.state) {
+    	settings.remove("newName")
+    }
+	log.debug "pageRenameGroup params: $params"
+    log.debug "pageRenameGroup settings: $settings"
+	def rv = dynamicPage(name: "pageRenameGroup", title: "Rename group \"$state.pref.name\"", onUpdate: true) {
+    	section {
+			input name: "newName", type: "text", title: "Enter new name",
+    	    	required: false, defaultValue: state.pref.name,
+                submitOnChange: true
+        }
+        if (newName) {
+	        section {
+            	href name: "hrefRenameGroupFinal", title: "Submit",
+                	description: "tap to rename $state.pref.name to $newName",
+                	page: "pageRenameGroupFinal", params: [ pref: [ "id": state.pref.id, newName: newName ] ]
+	        }
+        }
+    }
+	log.debug "RV $rv"
+    return rv
+
+}
+
+def pageRenameGroupFinal(params) {
+	log.debug "params: $params"
+	if (params.pref) {
+    	state.pref = params.pref
+    }
+	dynamicPage(name: "pageRenameGroupFinal", title: "Rename group \"$state.pref.name\"") {
+    	section {
+        	paragraph "renamed $state.pref.id -> $state.pref.newName"
         }
     }
 }
@@ -124,7 +182,6 @@ def pageAbout() {
     }
 }
 
-
 mappings {
 	path("/action")            { action: [ POST: "actionREST"  ] }
 }
@@ -145,9 +202,16 @@ def updated() {
 def initialize() {
 	// TODO: subscribe to attributes, devices, locations, etc.
     log.warn("initialize")
-
 	updateDevices()
     updateGroups()
+}
+
+def stDeviceFromId(deviceId) {
+	return switches.find { it.id == deviceId }
+}
+
+def deviceFromId(deviceId) {
+	return state.devices.find { it.id == deviceId }
 }
 
 def updateDevices() {
@@ -223,7 +287,7 @@ def updateGroups() {
     // and build a list of devices in each group
  	switches.each { dev ->
 		def groupId = dev.device.groupId
-		def group = state.groups.find { g -> g.id == groupId }
+		def group = state.groups.find { it.id == groupId }
         if (group) {
         	group.devices << dev.id
         } else {
@@ -234,14 +298,14 @@ def updateGroups() {
 	// guess room names from the devices in the room
     state.groups.each { group ->
         if (!group.name) {
-	    	def deviceNames = group.devices.collect { deviceId -> deviceFromId(deviceId).displayName }
+	    	def deviceNames = group.devices.collect { deviceFromId(it).name }
 	        group.name = guessRoomName(deviceNames)
         }
     }
 
 	// debug log
    	 state.groups.each { group ->
-		def deviceNames = group.devices.collect { deviceId -> deviceFromId(deviceId).displayName }
+		def deviceNames = group.devices.collect { deviceId -> stDeviceFromId(deviceId).displayName }
     	log.debug "GROUP name: $group.name groupId: $group.id devices: $deviceNames"
     }
 
@@ -348,10 +412,6 @@ def onoffREST(result) {
     }
 	
     return makeResponse("Turning ${onoff} ${devices_speech}.")
-}
-
-def deviceFromId(deviceId) {
-	return switches.find { it.id == deviceId }
 }
 
 def listSwitchesREST() {
