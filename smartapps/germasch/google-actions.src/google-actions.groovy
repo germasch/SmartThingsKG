@@ -49,7 +49,6 @@ preferences(oauthPage: "pageDevices") {
     }
     page(name: "pageManageGroups")
     	page(name: "pageRenameGroup")
-        page(name: "pageRenameGroupFinal")
     page(name: "pageManageDevices")
     page(name: "pageAbout")
 }
@@ -72,65 +71,39 @@ def pageMain() {
     }
 }
 
-
 def pageManageGroups(params) {
-	log.debug "pageManageGroups params $params"
-	log.debug "pageManageGroups settings $settings"
 	dynamicPage(name: "pageManageGroups", title: "Manage groups / rooms") {
     	// FIXME, do own groups, too
 		state.groups.each { group ->
         	if (!group.id) {
             	return
             }
-        	def name = group.name ? group.name : "<none>"
+            // update group from settings early (here), rather than just in initialize()
+            // so that we display the new name
+            def name = settings."group-name-${group.id}"
+            if (name) {
+            	group.name = name
+            } else {
+            	// FIXME, should put some default group.name from the start if we can't guess
+            	name = group.name ? group.name : "<none>"
+            }
     		section(name) {
                 def deviceNames = group.devices.collect { deviceFromId(it).name }
             	paragraph deviceNames.join("\n")
 				href name: "hrefRenameGroup", title: "Rename", required: false,
-                	description: "", //tap to rename this group",
-                	page: "pageRenameGroup", params: [ pref: ["id": group.id, name: group.name ] ]
+                	description: "",
+                	page: "pageRenameGroup", params: [ id: group.id, name: group.name ]
         	}
         }
     }
 }
 
 def pageRenameGroup(params) {
-	if (params.pref) {
-    	state.pref = params.pref
-    }
-    log.debug "pageRenameGroup settings: $settings"
-    if (!params.state) {
-    	settings.remove("newName")
-    }
-	log.debug "pageRenameGroup params: $params"
-    log.debug "pageRenameGroup settings: $settings"
-	def rv = dynamicPage(name: "pageRenameGroup", title: "Rename group \"$state.pref.name\"", onUpdate: true) {
+	//	log.debug "pageRenameGroup params: $params"
+	dynamicPage(name: "pageRenameGroup", title: "Rename group \"${params.name}\"") {
     	section {
-			input name: "newName", type: "text", title: "Enter new name",
-    	    	required: false, defaultValue: state.pref.name,
-                submitOnChange: true
-        }
-        if (newName) {
-	        section {
-            	href name: "hrefRenameGroupFinal", title: "Submit",
-                	description: "tap to rename $state.pref.name to $newName",
-                	page: "pageRenameGroupFinal", params: [ pref: [ "id": state.pref.id, newName: newName ] ]
-	        }
-        }
-    }
-	log.debug "RV $rv"
-    return rv
-
-}
-
-def pageRenameGroupFinal(params) {
-	log.debug "params: $params"
-	if (params.pref) {
-    	state.pref = params.pref
-    }
-	dynamicPage(name: "pageRenameGroupFinal", title: "Rename group \"$state.pref.name\"") {
-    	section {
-        	paragraph "renamed $state.pref.id -> $state.pref.newName"
+			input name: "group-name-${params.id}", type: "text", title: "Enter new name",
+    	    	required: true, defaultValue: params.name
         }
     }
 }
@@ -224,9 +197,9 @@ def updateDevices() {
     }
     
     // debug log
-    state.devices.each { dev ->
-    	log.debug "DEVICE name: $dev.name id: $dev.id groupId: $dev.groupId"
-    }
+//    state.devices.each { dev ->
+//    	log.debug "DEVICE name: $dev.name id: $dev.id groupId: $dev.groupId"
+//    }
 }
 
 def guessRoomName(strs) {
@@ -261,15 +234,7 @@ def guessRoomName(strs) {
     	return null
     }
     
-    def prefix_str = ""
-    prefix.each { word ->
-    	prefix_str += word
-        if (word != prefix.last()) {
-        	prefix_str += " "
-        }
-	}
-//    log.debug "guessRoomName: $prefix_str"
-    return prefix_str
+    return prefix.join(" ")
 }
 
 def updateGroups() {
@@ -296,10 +261,20 @@ def updateGroups() {
 	}
 
 	// guess room names from the devices in the room
+    log.debug "SETTINGS $settings"
     state.groups.each { group ->
-        if (!group.name) {
-	    	def deviceNames = group.devices.collect { deviceFromId(it).name }
-	        group.name = guessRoomName(deviceNames)
+    	def inputName = settings."group-name-${group.id}"
+    	if (inputName) {
+        	if (group.name != inputName) {
+	        	log.debug "updateGroups: updating ${group.name} -> ${inputName}, id ${group.id}"
+    	    	group.name = inputName
+            }
+        } else {
+        	if (!group.name) {
+	    		def deviceNames = group.devices.collect { deviceFromId(it).name }
+	        	group.name = guessRoomName(deviceNames)
+                log.debug "updateGroups: guessed ${group.name}, id ${group.id}"
+            }
         }
     }
 
