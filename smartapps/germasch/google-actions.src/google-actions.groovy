@@ -47,51 +47,69 @@ preferences(oauthPage: "pageDevices") {
             input "coloredLights", "capability.actuator", title: "Choose Colored Lights (on/off/level/color)", required: false, multiple: true
 	    }
     }
+    page(name: "pageManageDevices")
+    	page(name: "pageDeviceAliases")
     page(name: "pageManageGroups")
     	page(name: "pageRenameGroup")
-    page(name: "pageManageDevices")
     page(name: "pageAbout")
+    page(name: "pageUninstall")
 }
 
 def pageMain() {
+	// This gets called after selecting "Done" on pageManageGroups, so
+    // we should to update state.groups here (as early as possible)
+	updateGroupDevicesFromSettings()
+//    updateDeviceNameEnabledFromSettings()
+    
     dynamicPage(name: "pageMain", title: "${textAppName()}", install: true) {
     	section("Settings") {
 	        href(name: "hrefDevices", title: "Select devices", required: false,
-    			description: "tap to select devices that ${textAppName()} can control",
+            	description: "",
+//    			description: "tap to select devices that ${textAppName()} can control",
                 page: "pageDevices")
-            href(name: "hrefManageGroups", title: "Manage groups", required: false,
-                description: "tap to manage your rooms/groups", page: "pageManageGroups")
             href(name: "hrefManageDevices", title: "Manage devices", required: false,
-                description: "tap to manage your devices", page: "pageManageDevices")
+            	description: "",
+//                description: "tap to manage your devices",
+                page: "pageManageDevices")
+            href(name: "hrefManageGroups", title: "Manage groups", required: false,
+            	description: "",
+//                description: "tap to manage your rooms/groups",
+				page: "pageManageGroups")
         }
         section("About") {
 			href(name: "hrefAbout", title: "About ${textAppName()}", required: false,
-            	page: "pageAbout")
+            	description: "", page: "pageAbout")
+        }
+        section("Uninstall") {
+        	href(name: "hrefUninstall", title: "Tap to uninstall", required: false,
+            	description: "", page: "pageUninstall")
         }
     }
 }
 
-def pageManageGroups(params) {
+def pageManageGroups() {
+	// This gets called after selecting "Done" on pageRenameGroup, so
+    // we need to update state.groups here (as early as possible)
+    // FIXME, this is all based on device names being unique, which may not be true
+    updateGroupNamesFromSettings()
+    
 	dynamicPage(name: "pageManageGroups", title: "Manage groups / rooms") {
-    	// FIXME, do own groups, too
+    	// FIXME, this needs work for doing our own groups
+        // we probably shouldn't allow changing the devices assigned to a ST group
+        def allDevices = state.devices*.name.sort() // FIXME, sorting state.devices would be better
+
 		state.groups.each { group ->
         	if (!group.id) {
             	return
             }
-            // update group from settings early (here), rather than just in initialize()
-            // so that we display the new name
-            def name = settings."group-name-${group.id}"
-            if (name) {
-            	group.name = name
-            } else {
-            	// FIXME, should put some default group.name from the start if we can't guess
-            	name = group.name ? group.name : "<none>"
-            }
+            // FIXME
+            def name = group.name ? group.name : "<none>"
     		section(name) {
-                def deviceNames = group.devices.collect { deviceFromId(it).name }
-            	paragraph deviceNames.join("\n")
-				href name: "hrefRenameGroup", title: "Rename", required: false,
-                	description: "",
+                def selectedDevices = group.devices.collect { deviceFromId(it).name }.sort()
+                input name: "group-devices-${group.id}", type: "enum", title: "Devices", required: false,
+                	options: allDevices, multiple: true, defaultValue: selectedDevices
+				href name: "hrefRenameGroup", title: "Rename '$group.name'", required: false,
+                	description: "", state: "complete",
                 	page: "pageRenameGroup", params: [ id: group.id, name: group.name ]
         	}
         }
@@ -99,28 +117,82 @@ def pageManageGroups(params) {
 }
 
 def pageRenameGroup(params) {
+	// FIXME, rename -> "edit" (?)
 	//	log.debug "pageRenameGroup params: $params"
-	dynamicPage(name: "pageRenameGroup", title: "Rename group \"${params.name}\"") {
-    	section {
-			input name: "group-name-${params.id}", type: "text", title: "Enter new name",
+	dynamicPage(name: "pageRenameGroup") {
+    	section("Edit Group '${params.name}'") {
+			input name: "group-name-${params.id}", type: "text", title: "Group Name",
     	    	required: true, defaultValue: params.name
         }
     }
 }
 
 def pageManageDevices() {
+	// FIXME, temp fixup
+   	state.devices.each { dev ->
+    	if (!dev.aliases) {
+        	dev.aliases = [ dev.name ]
+        }
+	    if (dev.aliases[0] instanceof String) {
+    		dev.aliases = dev.aliases.collect {
+        		[ id: UUID.randomUUID().toString(), name: it ]
+        	}
+	    }
+    }
+    if (state.newAliasId) {
+    	def newAliasName = settings."alias-name-${state.newAliasId}"
+        if (newAliasName) {
+        	log.debug "pageManageDevices: adding alias $newAliasName to " +
+            	"${deviceFromId(state.newAliasDeviceId).name}"
+        	deviceFromId(state.newAliasDeviceId).aliases <<
+            	[ id: state.newAliasId, name: newAliasName ]
+            state.newAliasId = null
+        }
+	    state.newAliasDeviceId = null
+    }
+    
+    if (!state.newAliasId) {
+    	state.newAliasId = UUID.randomUUID().toString()
+    }
+    
 	dynamicPage(name: "pageManageDevices", title: "Manage devices") {
-    	section {
-        	state.devices.each { dev ->
-            	paragraph "name: $dev.name group: $dev.groupId"
+    	state.devices.each { dev ->
+    		section(dev.name) {
+            	def room = dev.groupId ? groupFromId(dev.groupId).name : "<not set>"
+                def descr = dev.aliases*.name?.join("\n")
+//                input name: "device-name-enabled-${dev.id}", type: "bool", title: "React to '${dev.name}'",
+//                	required: true, defaultValue: true
+                href name: "hrefDeviceAliases", title: "Edit Aliases", required: false,
+                	description: descr, state: "complete",
+                   	page: "pageDeviceAliases", params: [ id: dev.id, name: dev.name, newAliasId: state.newAliasId ]
+            	paragraph "Room: ${room}"
             }
+        }
+    }
+}
+
+def pageDeviceAliases(params) {
+	log.debug "pageDeviceAliases params: $params"
+    def dev = deviceFromId(params.id)
+    log.debug "pageDeviceAliases dev: $dev"
+    state.newAliasDeviceId = params.id
+	dynamicPage(name: "pageDeviceAliases") {
+    	section("Aliases for '${params.name}'") {
+        	dev.aliases.each {
+				input name: "alias-name-${it.id}", type: "text", title: "Edit Alias",
+    		    	required: false, defaultValue: it.name
+            }
+        }
+        section {
+        	input name: "alias-name-${params.newAliasId}", type: "text", title: "Add Alias",
+            	required: false
         }
     }
 }
 
 // FIXME, doesn't need to be dynamic
 def pageAbout() {
-    dynamicPage(name: "pageAbout", title: "About ${textAppName()}", uninstall: true) {
+    dynamicPage(name: "pageAbout", title: "About ${textAppName()}") {
 	   	section {
     		paragraph "${textAppName()} ${textAppVersion()}\n${textCopyright()}"
 	    }
@@ -130,29 +202,16 @@ def pageAbout() {
         section("Instructions") {
         	paragraph "TODO"
         }
-
-//		log.debug "state $state"
-//		createAccessToken()
-//		log.debug "Creating new Access Token"
-//		log.debug "state2 $state"
-
-//        def params = [
-//    		uri: "https://graph-na02-useast1.api.smartthings.com/api/groups",
-//		    headers: [
-//				"Authorization": 'Bearer ' + state.accessToken //"0179a105-4c0d-46fb-8a8e-e24f8839e0b2"
-//		    ],
-//	    ]
-    
-//	    httpGet(params) { response ->
-//			log.debug "response data: ${response.data}"
-//        	if (response.data.status.code < 200 || response.data.status.code >= 300) {
-//	        	log.error "session: unexpected status $response.data.status.code"
-//			}
-//	    }
-        
-//        revokeAccessToken()
-//        state.accessToken = null
     }
+}
+
+def pageUninstall() {
+    dynamicPage(name: "pageUninstall", uninstall: true) {
+    	section("Uninstall") {
+	    	paragraph "Use the button below to uninstall ${textAppName()}.\n" + 
+    	    	"You will lose all your settings."
+        }
+	}
 }
 
 mappings {
@@ -174,9 +233,20 @@ def updated() {
 
 def initialize() {
 	// TODO: subscribe to attributes, devices, locations, etc.
-    log.warn("initialize")
+    log.warn "initialize"
 	updateDevices()
     updateGroups()
+    
+    // FIXME, those don't seem to actually work
+    subscribe(location, "deviceCreated", deviceUpdatesHandler, [filterEvents: false])
+    subscribe(location, "deviceDeleted", deviceUpdatesHandler, [filterEvents: false])
+    subscribe(location, "deviceUpdated", deviceUpdatesHandler, [filterEvents: false])
+    log.debug "done subscribing"
+}
+
+def deviceUpdatesHandler(evt) {
+	// FIXME, do something
+	log.debug "deviceUpdatesHandler: evt $evt"
 }
 
 def stDeviceFromId(deviceId) {
@@ -185,6 +255,55 @@ def stDeviceFromId(deviceId) {
 
 def deviceFromId(deviceId) {
 	return state.devices.find { it.id == deviceId }
+}
+
+def deviceName(deviceId) {
+	return deviceFromId(deviceId).name
+}
+
+def groupFromId(groupId) {
+	return state.groups.find {it.id == groupId }
+}
+
+def groupName(groupId) {
+	return groupFromId(groupId).name
+}
+
+def updateGroupDevicesFromSettings() {
+    state.groups.each { group ->
+		def selectedDevices = settings."group-devices-${group.id}"
+        if (selectedDevices) {
+        	def selected = selectedDevices.collect { deviceName ->
+               	state.devices.find { it.name == deviceName }
+            }
+            if (group.devices != selected?.id) {
+            	def prevDevices = group.devices.collect { deviceFromId(it).name }
+            	log.debug "updateGroupDevicesFromSettings: group ${group.name}: ${prevDevices} -> ${selected?.name}"
+	            group.devices = selected?.id
+            }
+        }
+    }
+}
+
+def updateGroupNamesFromSettings() {
+	state.groups.each { group ->
+        def name = settings."group-name-${group.id}"
+        if (name && group.name != name) {
+        	log.debug "updateGroupNamesFromSettings: group name ${group.name} -> ${name}"
+	        group.name = name
+        }
+    }
+}
+
+// FIXME, gone
+def updateDeviceNameEnabledFromSettings() {
+	state.devices.each{ device ->
+    	def deviceNameEnabled = settings."device-name-enabled-${deviceId}"
+        if (device.nameEnabled != deviceNameEnabled) {
+        	log.debug "updateDeviceNameEnabledFromSettings: device $device.name: $device.nameEnabled -> $deviceNameEnabled"
+        	device.nameEnabled = deviceNameEnabled
+        }
+    }
 }
 
 def updateDevices() {
@@ -261,7 +380,6 @@ def updateGroups() {
 	}
 
 	// guess room names from the devices in the room
-    log.debug "SETTINGS $settings"
     state.groups.each { group ->
     	def inputName = settings."group-name-${group.id}"
     	if (inputName) {
