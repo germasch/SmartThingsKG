@@ -18,6 +18,8 @@
 // update icons
 // think about how to best name this app
 
+include "asynchttp_v1"
+
 definition(
     name: "${textAppName()}",
     namespace: "germasch",
@@ -401,11 +403,20 @@ def updateGroups() {
 		def deviceNames = group.devices.collect { deviceId -> stDeviceFromId(deviceId).displayName }
     	log.debug "GROUP name: $group.name groupId: $group.id devices: $deviceNames"
     }
-
-
 }
 
-// FIXME, use async http API
+def listToSpeech(devices, addArticle=false) {
+	if (addArticle) {
+		devices = devices.collect { "the $it" }
+    }
+
+	def devicesSpeech = ""
+    if (devices.size() > 1) {
+		 devicesSpeech = devices[0..<-1].join(", ") + " and "
+    }
+    devicesSpeech += devices.last()
+}
+
 def apiAiRequest(endpoint, body) {
     def APIAI_HOSTNAME = "api.api.ai"
 	def APIAI_ENDPOINT = "/v1/"
@@ -427,10 +438,32 @@ def apiAiRequest(endpoint, body) {
     }
 }
 
+def apiAiRequestAsync(endpoint, body) {
+    def APIAI_HOSTNAME = "api.api.ai"
+	def APIAI_ENDPOINT = "/v1/"
+
+    def params = [
+    	uri: "https://" + APIAI_HOSTNAME + APIAI_ENDPOINT + endpoint,
+	    headers: [
+			"Authorization": 'Bearer ' + appSettings."API.AI client access token",
+			"api-request-source": 'groovy'
+	    ],
+        body: body
+    ]
+    
+    asynchttp_v1.post(apiAiResponseHandler, params)
+}
+
+def apiAiResponseHandler(response, data) {
+	// log.debug "response.data: $response.data"
+    if (response.hasError()) {
+		log.error "apiAiResponseHandler: ${response.getErrorMessage()}"
+    }
+}
+
 def newSession(sessionId) {
 	//log.debug("newSession sessionId: $sessionId")
-    def entities = [[name: "st_switch", devices: switches],
-    	            [name: "st_dimmer", devices: dimmers]]
+    def entities = [[name: "st_dimmer", devices: dimmers]]
     def userEntities = entities.collect { entity ->
         [
             sessionId: sessionId,
@@ -441,9 +474,18 @@ def newSession(sessionId) {
         	}
      	]
     }
+    userEntities << [
+    	sessionId: sessionId,
+        name: "st_switch",
+        extend: false,
+        // FIXME, should only do this for devices with capability switch
+        entries: state.devices.collect { dev ->
+        	[ value: dev.id, synonyms: dev.aliases*.name ]
+        }
+    ]
     
-    //log.debug "newSession: userEntities $userEntities"
-    apiAiRequest("userEntities", userEntities)
+	log.debug "newSession: userEntities $userEntities"
+    apiAiRequestAsync("userEntities", userEntities)
 }
 
 def actionREST() {
@@ -476,35 +518,20 @@ def makeResponse(speech) {
 
 def welcomeREST(result) {
 	def speech = "Welcome to SmartThings at your $location.name! How can I help you?" 
-    return makeResponse(speech)
+    makeResponse speech
 }
 
 def onoffREST(result) {
-    def device_names = result.parameters.devices
+    def deviceIds = result.parameters.devices
+	def originalDevices = result.parameters."devices-original"
     def onoff = result.parameters."on-off"
-	// FIXME check args (e.g. empty device_names)
-    def devices = device_names.collect { name ->
-	  // log.debug "name $name switches $switches"
-      switches.find {
-        // log.debug "it: $it.displayName $name"
-        name.equalsIgnoreCase(it.displayName)
-      }
-    }
-    log.debug "onoffREST: devices: $devices onoff: $onoff"
-    if (onoff == "on") {
-    	devices.each { it.on() }
-   	} else {
-    	devices.each { it.off() }
-    }
-    def devices_speech = ""
-    device_names.each { 
-    	if (it == device_names.last() && it != device_names.first()) {
-		   	devices_speech += "and "
-        }
-        devices_speech += "the ${it} " 
-    }
-	
-    return makeResponse("Turning ${onoff} ${devices_speech}.")
+    assert ["on", "off"].contains(onoff)
+
+	def stDevices = deviceIds.collect { stDeviceFromId(it) }
+    // log.debug "onoffREST: stDevices: $stDevices onoff: $onoff"
+	stDevices*."${onoff}"()
+
+	makeResponse "Okay, turning ${onoff} ${listToSpeech(originalDevices, true)}."
 }
 
 def listSwitchesREST() {
@@ -522,7 +549,7 @@ def listSwitchesREST() {
 		speech += it.displayName + " is " + it.currentValue("switch") + ". ";
 	}
 
-	return makeResponse(speech)
+	makeResponse speech
 }
 
 // TODO: implement event handlers
