@@ -61,7 +61,6 @@ def pageMain() {
 	// This gets called after selecting "Done" on pageManageGroups, so
     // we should to update state.groups here (as early as possible)
 	updateGroupDevicesFromSettings()
-//    updateDeviceNameEnabledFromSettings()
     
     dynamicPage(name: "pageMain", title: "${textAppName()}", install: true) {
     	section("Settings") {
@@ -131,6 +130,7 @@ def pageRenameGroup(params) {
 
 def pageManageDevices() {
 	// FIXME, temp fixup
+    if (false) {
    	state.devices.each { dev ->
     	if (!dev.aliases) {
         	dev.aliases = [ dev.name ]
@@ -141,16 +141,36 @@ def pageManageDevices() {
         	}
 	    }
     }
-    if (state.newAliasId) {
-    	def newAliasName = settings."alias-name-${state.newAliasId}"
-        if (newAliasName) {
-        	log.debug "pageManageDevices: adding alias $newAliasName to " +
-            	"${deviceFromId(state.newAliasDeviceId).name}"
-        	deviceFromId(state.newAliasDeviceId).aliases <<
-            	[ id: state.newAliasId, name: newAliasName ]
-            state.newAliasId = null
+    }
+    
+    // handle edited, deleted and added aliases
+    if (state.aliasDeviceId) {
+		def device = deviceFromId(state.aliasDeviceId)
+
+		device.aliases.removeAll { alias ->
+			def aliasName = settings."alias-name-${alias.id}"
+			!aliasName
         }
-	    state.newAliasDeviceId = null
+
+       	device.aliases.each { alias ->
+			def aliasName = settings."alias-name-${alias.id}"
+//            log.debug "aliasName $aliasName alias $alias"
+            if (aliasName && aliasName != alias.name) {
+           		log.debug "updating alias $alias.name -> $aliasName for device $device.name"
+           		alias.name = aliasName
+            }
+        }
+    
+	    // handle added aliases
+    	if (state.newAliasId) {
+    		def newAliasName = settings."alias-name-${state.newAliasId}"
+	        if (newAliasName) {
+  		      	log.debug "pageManageDevices: adding alias $newAliasName to $device.name"
+        		device.aliases << [ id: state.newAliasId, name: newAliasName ]
+	            state.newAliasId = null
+    	    }
+		    state.aliasDeviceId = null
+    	}
     }
     
     if (!state.newAliasId) {
@@ -165,8 +185,8 @@ def pageManageDevices() {
 //                input name: "device-name-enabled-${dev.id}", type: "bool", title: "React to '${dev.name}'",
 //                	required: true, defaultValue: true
                 href name: "hrefDeviceAliases", title: "Edit Aliases", required: false,
-                	description: descr, state: "complete",
-                   	page: "pageDeviceAliases", params: [ id: dev.id, name: dev.name, newAliasId: state.newAliasId ]
+                	description: descr,
+                   	page: "pageDeviceAliases", params: [ id: dev.id, newAliasId: state.newAliasId ]
             	paragraph "Room: ${room}"
             }
         }
@@ -176,19 +196,40 @@ def pageManageDevices() {
 def pageDeviceAliases(params) {
 	log.debug "pageDeviceAliases params: $params"
     def dev = deviceFromId(params.id)
-    log.debug "pageDeviceAliases dev: $dev"
-    state.newAliasDeviceId = params.id
-	dynamicPage(name: "pageDeviceAliases") {
-    	section("Aliases for '${params.name}'") {
-        	dev.aliases.each {
-				input name: "alias-name-${it.id}", type: "text", title: "Edit Alias",
-    		    	required: false, defaultValue: it.name
+    //log.debug "pageDeviceAliases dev: $dev"
+    state.aliasDeviceId = params.id
+    
+//	def delAliasId = params.delAliasId
+//    if (delAliasId) {
+//    	def delAlias = dev.aliases.find { it.id == delAliasId }
+//    	log.debug "deleting $delAlias.name from $dev.name"
+//    	dev.aliases.removeAll { it.id == delAliasId }
+//    }
+    
+    log.debug "dev: $dev"
+    def allAliases = dev.aliases?.name
+    
+	dynamicPage(name: "pageDeviceAliases", title: "Aliases for device '${dev.name}'") {
+    	section {
+        	paragraph "To rename an alias, change it in the 'Rename Alias' field.\n" +
+				"To delete an alias, just rename it to <blank>.\n" +
+				"To add an alias, type the new name into the 'New Alias' field."
+        }
+        dev.aliases.each { alias ->
+    		section("Edit alias '${alias.name}'") {
+				input name: "alias-name-${alias.id}", type: "text", title: "Rename Alias",
+    		    	required: false, defaultValue: alias.name
             }
         }
-        section {
-        	input name: "alias-name-${params.newAliasId}", type: "text", title: "Add Alias",
+        section("Add Alias") {
+        	input name: "alias-name-${params.newAliasId}", type: "text", title: "New Alias",
             	required: false
         }
+//        section("Delete Aliases") {
+//        	input name: "tmpX", type: "enum", title: "Tap to deselect aliases",
+//            	required: false, multiple: true,
+//                options: allAliases, defaultValue: allAliases
+//        }
     }
 }
 
@@ -236,8 +277,8 @@ def updated() {
 def initialize() {
 	// TODO: subscribe to attributes, devices, locations, etc.
     log.warn "initialize"
-	updateDevices()
-    updateGroups()
+	//updateDevices()
+    //updateGroups()
     
     // FIXME, those don't seem to actually work
     subscribe(location, "deviceCreated", deviceUpdatesHandler, [filterEvents: false])
@@ -293,17 +334,6 @@ def updateGroupNamesFromSettings() {
         if (name && group.name != name) {
         	log.debug "updateGroupNamesFromSettings: group name ${group.name} -> ${name}"
 	        group.name = name
-        }
-    }
-}
-
-// FIXME, gone
-def updateDeviceNameEnabledFromSettings() {
-	state.devices.each{ device ->
-    	def deviceNameEnabled = settings."device-name-enabled-${deviceId}"
-        if (device.nameEnabled != deviceNameEnabled) {
-        	log.debug "updateDeviceNameEnabledFromSettings: device $device.name: $device.nameEnabled -> $deviceNameEnabled"
-        	device.nameEnabled = deviceNameEnabled
         }
     }
 }
@@ -528,17 +558,17 @@ def onoffREST(result) {
     assert ["on", "off"].contains(onoff)
 
 	def stDevices = deviceIds.collect { stDeviceFromId(it) }
-    // log.debug "onoffREST: stDevices: $stDevices onoff: $onoff"
+    log.debug "onoffREST: stDevices: $stDevices onoff: $onoff"
 	stDevices*."${onoff}"()
 
 	makeResponse "Okay, turning ${onoff} ${listToSpeech(originalDevices, true)}."
 }
 
 def listSwitchesREST() {
-	log.debug "listSwitchesREST: $switches"
+	log.debug "listSwitchesREST"
 	def speech = "Here are your switches. "
 
-	switches.each {
+//	switches.each {
 //		log.debug "switch: ${it.displayName} ${it.currentValue('switch')} supported ${it.supportedAttributes} capabilities ${it.capabilities}"
 //		log.debug "properties ${it.properties} device ${it.device} device.properties ${it.device.properties}"
 //		log.debug "group: ${it.device.groupId}"
@@ -546,7 +576,12 @@ def listSwitchesREST() {
 //        attrs.each { attr ->
 //        	log.debug "attr: $attr getValues ${attr.getValues()}"
 //        }
-		speech += it.displayName + " is " + it.currentValue("switch") + ". ";
+//	}
+
+	// FIXME, for switches only
+	state.devices.each { device ->
+    	def stDevice = stDeviceFromId(device.id)
+		speech += device.name + " is " + stDevice.currentValue("switch") + ". ";
 	}
 
 	makeResponse speech
