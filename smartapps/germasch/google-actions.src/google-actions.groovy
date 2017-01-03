@@ -180,7 +180,7 @@ def pageManageDevices() {
 	dynamicPage(name: "pageManageDevices", title: "Manage devices") {
     	state.devices.each { dev ->
     		section(dev.name) {
-            	def room = dev.groupId ? groupFromId(dev.groupId).name : "<not set>"
+            	def room = dev.groupId ? getGroup(dev.groupId).name : "<not set>"
                 def descr = dev.aliases*.name?.join("\n")
 //                input name: "device-name-enabled-${dev.id}", type: "bool", title: "React to '${dev.name}'",
 //                	required: true, defaultValue: true
@@ -262,13 +262,13 @@ mappings {
 }
 
 def installed() {
-	log.debug "Installed with settings: ${settings}"
+	log.debug "installed() with settings: ${settings}"
 
 	initialize()
 }
 
 def updated() {
-	log.debug "Updated with settings: ${settings}"
+	log.debug "updated()"
 
 	unsubscribe()
 	initialize()
@@ -276,15 +276,24 @@ def updated() {
 
 def initialize() {
 	// TODO: subscribe to attributes, devices, locations, etc.
-    log.warn "initialize"
-	//updateDevices()
-    //updateGroups()
+    log.info "initialize"
+
+	if (!state.devices) {
+    	state.devices = []
+    }
+	if (!state.groups) {
+    	state.groups = []
+    }
+    state.devices = []
+    state.groups = []
+
+	updateDevices()
+    updateGroups()
     
     // FIXME, those don't seem to actually work
     subscribe(location, "deviceCreated", deviceUpdatesHandler, [filterEvents: false])
     subscribe(location, "deviceDeleted", deviceUpdatesHandler, [filterEvents: false])
     subscribe(location, "deviceUpdated", deviceUpdatesHandler, [filterEvents: false])
-    log.debug "done subscribing"
 }
 
 def deviceUpdatesHandler(evt) {
@@ -304,12 +313,24 @@ def deviceName(deviceId) {
 	return deviceFromId(deviceId).name
 }
 
-def groupFromId(groupId) {
+def getGroup(groupId) {
 	return state.groups.find {it.id == groupId }
 }
 
+def getOrCreateGroup(groupId) {
+	if (!groupId) {
+    	return null
+    }
+	def group = getGroup(groupId)
+    if (!group) {
+    	group = [id: groupId, name: "group-$groupId", devices: []]
+        state.groups << group
+    }
+    group
+}
+
 def groupName(groupId) {
-	return groupFromId(groupId).name
+	return getGroup(groupId).name
 }
 
 def updateGroupDevicesFromSettings() {
@@ -319,10 +340,11 @@ def updateGroupDevicesFromSettings() {
         	def selected = selectedDevices.collect { deviceName ->
                	state.devices.find { it.name == deviceName }
             }
-            if (group.devices != selected?.id) {
+            log.debug "group.devices $group.devices --- selected $selected*.id"
+            if (group.devices != selected*.id) {
             	def prevDevices = group.devices.collect { deviceFromId(it).name }
-            	log.debug "updateGroupDevicesFromSettings: group ${group.name}: ${prevDevices} -> ${selected?.name}"
-	            group.devices = selected?.id
+            	log.debug "updateGroupDevicesFromSettings: group ${group.name}: ${prevDevices} -> ${selected*.name}"
+	            group.devices = selected*.id
             }
         }
     }
@@ -338,19 +360,83 @@ def updateGroupNamesFromSettings() {
     }
 }
 
+def deleteDevice(id) {
+	log.info "deleteDevice: deleting ${deviceFromId(id).name} $id"
+	// remove the from state.devices
+    state.devices.removeAll { device -> device.id == id }
+	// also remove them from groups that referenced them
+    state.groups.each { group->
+    	group.devices.removeAll { it == id }
+    }
+}
+
+def addDevice(stDevice) {
+	log.info "addDevice: adding $stDevice.displayName $stDevice.id"
+    def device = [
+    	id: stDevice.id,
+        name: stDevice.displayName,
+        groupId: stDevice.device.groupId
+    ]
+	state.devices << device
+    if (device.groupId) {
+		def group = getOrCreateGroup(device.groupId)
+        if (group.devices.contains(device.id)) {
+        	log.warn "group.devices: $group.devices --- device $device.id"
+        }
+		group.devices << device.id
+    }
+}
+
+def updateDevice(stDevice) {
+	log.debug "updateDevice: updating $stDevice.displayName $stDevice.id"
+    def device = state.devices.find { it.id == stDevice.id }
+
+	if (device.name != stDevice.displayName) {
+    	log.info "renaming $device.name -> $stDevice.displayName"
+	    device.name = stDevice.displayName
+    }
+    def newGroupId = stDevice.device.groupId
+    if (device.groupId != newGroupId) {
+    	log.info "changing device $curDevice.name groupId $curDevice.groupId -> $device.device.groupId"
+        def OrigGroup = getGroup(device.groupId)
+        def inOrigGroup = OrigGroup?.devices?.contains(device.id)
+        if (inOrigGroup || (newGroupId && !getGroup(newGroupId))) {
+    	    // only add to new group if it still was in the original group
+	        // (that is, the user hadn't used preference to remove it from that group,
+        	// as far as this app is concerned), or if the newGroup is new to us
+            def newGroup = getOrCreateGroup(newGroupId)
+            if (!newGroup.devices.contains(device.id)) {
+		        newGroup.devices << device.id
+            }
+        }
+	    // remove from original group (if in there)
+	    origGroup?.devices?.removeAll { it == device.id }
+        // update groupId
+	    device.groupId = newGroupId
+    }
+}
+
 def updateDevices() {
-	// FIXME: want to store things like synonyms, but then of course we can't just
-    // start over from an empty list
-    // would still have to delete orphaned devices from this list
-	state.devices = []
-    switches.each { dev ->
-		state.devices << [ id: dev.id, name: dev.displayName, groupId: dev.device.groupId ]
+	// first, see whether devices have been removed
+	def newDeviceIds = switches*.id
+    def curDeviceIds = state.devices*.id
+    def delDeviceIds = curDeviceIds - newDeviceIds
+
+	// delDeviceIds contains the ids of those devices that have been removed
+    delDeviceIds.each {	deleteDevice(it) }
+
+	switches.each { device ->
+    	if (state.devices*.id.contains(device.id)) {
+        	updateDevice(device)
+        } else {
+        	addDevice(device)
+        }
     }
     
     // debug log
-//    state.devices.each { dev ->
-//    	log.debug "DEVICE name: $dev.name id: $dev.id groupId: $dev.groupId"
-//    }
+	// state.devices.each { dev ->
+	//     log.debug "DEVICE name: $dev.name id: $dev.id groupId: $dev.groupId"
+	// }
 }
 
 def guessRoomName(strs) {
@@ -381,49 +467,26 @@ def guessRoomName(strs) {
         }
     }
     
-    if (!prefix) {
-    	return null
-    }
-    
-    return prefix.join(" ")
+    return prefix?.join(" ")
 }
 
 def updateGroups() {
-	if (!state.groups) {
-    	state.groups = []
-    }
-	// For all the Smartthings groups (ie., the ones that have an id),
-    // clear out the list of devices because we'll re-add these
-	state.groups.each { group ->
-    	if (group.id) {
-        	group.devices = []
-        }
-    }
-    // Create groups for Smartthings groups that we don't have an entry for yet,
-    // and build a list of devices in each group
- 	switches.each { dev ->
-		def groupId = dev.device.groupId
-		def group = state.groups.find { it.id == groupId }
-        if (group) {
-        	group.devices << dev.id
-        } else {
-	        state.groups << [id: groupId, devices: [dev.id]]
-        }
-	}
-
 	// guess room names from the devices in the room
     state.groups.each { group ->
     	def inputName = settings."group-name-${group.id}"
     	if (inputName) {
         	if (group.name != inputName) {
-	        	log.debug "updateGroups: updating ${group.name} -> ${inputName}, id ${group.id}"
+	        	log.warn "updateGroups: updating ${group.name} -> ${inputName}, id ${group.id}"
     	    	group.name = inputName
             }
         } else {
-        	if (!group.name) {
+        	if (group.name == "group-$group.id") {
 	    		def deviceNames = group.devices.collect { deviceFromId(it).name }
-	        	group.name = guessRoomName(deviceNames)
-                log.debug "updateGroups: guessed ${group.name}, id ${group.id}"
+	        	def guessedName = guessRoomName(deviceNames)
+                if (guessedName) {
+                	group.name = guessedName
+	                log.debug "updateGroups: guessed ${group.name}, id ${group.id}"
+                }
             }
         }
     }
