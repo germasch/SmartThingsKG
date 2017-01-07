@@ -3,14 +3,18 @@
  *
  *  Copyright 2016 Kai Germaschewski
  *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
- *  in compliance with the License. You may obtain a copy of the License at:
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ *  GNU General Public License for more details.
  *
- *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
- *  for the specific language governing permissions and limitations under the License.
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -45,37 +49,39 @@ preferences(oauthPage: "pageDevices") {
 	page(name: "pageDevices", title: "Select devices") {
 		section("Allow ${textAppName()} to control the following devices.") {
      	 	input "switches", "capability.switch", title: "Choose Switches/Lights (on/off)", required: false, multiple: true
-        	input "dimmers", "capability.switchLevel", title: "Choose Dimmers (on/off/level)", required: false, multiple: true
-            input "coloredLights", "capability.actuator", title: "Choose Colored Lights (on/off/level/color)", required: false, multiple: true
 	    }
     }
-    page(name: "pageManageDevices")
-    	page(name: "pageDeviceAliases")
     page(name: "pageManageGroups")
     	page(name: "pageRenameGroup")
+    page(name: "pageManageDevices")
+    	page(name: "pageDeviceAliases")
     page(name: "pageAbout")
     page(name: "pageUninstall")
 }
 
-def pageMain() {
-	// This gets called after selecting "Done" on pageManageGroups, so
-    // we should to update state.groups here (as early as possible)
-	updateGroupDevicesFromSettings()
+def pageMain(params) {
+	log.debug "pageMain params $params"
+	// FIXME: the app should be first installed through OAuth, should make sure it was
+    
+    // should really be called on submit from pageDevices
+    updateDevicesFromSettings()
+    // should really be called on submit from pageManageGroups (IIRC)
+	if (state.submitManageGroups) {
+		updateGroupDevicesFromSettings()
+        state.submitManageGroups = false
+    }
     
     dynamicPage(name: "pageMain", title: "${textAppName()}", install: true) {
     	section("Settings") {
 	        href(name: "hrefDevices", title: "Select devices", required: false,
             	description: "",
-//    			description: "tap to select devices that ${textAppName()} can control",
                 page: "pageDevices")
-            href(name: "hrefManageDevices", title: "Manage devices", required: false,
-            	description: "",
-//                description: "tap to manage your devices",
-                page: "pageManageDevices")
             href(name: "hrefManageGroups", title: "Manage groups", required: false,
             	description: "",
-//                description: "tap to manage your rooms/groups",
 				page: "pageManageGroups")
+            href(name: "hrefManageDevices", title: "Manage devices", required: false,
+            	description: "",
+                page: "pageManageDevices")
         }
         section("About") {
 			href(name: "hrefAbout", title: "About ${textAppName()}", required: false,
@@ -94,24 +100,26 @@ def pageManageGroups() {
     // FIXME, this is all based on device names being unique, which may not be true
     updateGroupNamesFromSettings()
     
+    // FIXME, this isn't perfect, either, because it'll also be set if using "Back"
+    state.submitManageGroups = true
+    
 	dynamicPage(name: "pageManageGroups", title: "Manage groups / rooms") {
     	// FIXME, this needs work for doing our own groups
         // we probably shouldn't allow changing the devices assigned to a ST group
-        def allDevices = state.devices*.name.sort() // FIXME, sorting state.devices would be better
-
-		state.groups.each { group ->
-        	if (!group.id) {
-            	return
-            }
-            // FIXME
-            def name = group.name ? group.name : "<none>"
-    		section(name) {
-                def selectedDevices = group.devices.collect { deviceFromId(it).name }.sort()
-                input name: "group-devices-${group.id}", type: "enum", title: "Devices", required: false,
+        // FIXME, sorting state.devices would be better (but state.devices is a HashMap)
+		def allDevices = state.devices.collect { deviceId, device ->
+        	["$deviceId": device.name]
+        }
+        allDevices.sort { it.values().toArray()[0] }
+ 
+		state.groups.each { groupId, group ->
+    		section(group.name) {
+                def selectedDevices = group.devices.findResults { state.devices[it]?.id }
+                input name: "group-devices-${groupId}", type: "enum", title: "$group.name Devices", required: false,
                 	options: allDevices, multiple: true, defaultValue: selectedDevices
 				href name: "hrefRenameGroup", title: "Rename '$group.name'", required: false,
                 	description: "", state: "complete",
-                	page: "pageRenameGroup", params: [ id: group.id, name: group.name ]
+                	page: "pageRenameGroup", params: [ id: groupId, name: group.name ]
         	}
         }
     }
@@ -129,29 +137,17 @@ def pageRenameGroup(params) {
 }
 
 def pageManageDevices() {
-	// FIXME, temp fixup
-    if (false) {
-   	state.devices.each { dev ->
-    	if (!dev.aliases) {
-        	dev.aliases = [ dev.name ]
-        }
-	    if (dev.aliases[0] instanceof String) {
-    		dev.aliases = dev.aliases.collect {
-        		[ id: UUID.randomUUID().toString(), name: it ]
-        	}
-	    }
-    }
-    }
-    
-    // handle edited, deleted and added aliases
+	// if state.aliasDeviceId is set, we return from pageDeviceAliases,
+    // so handle deleted, edited and added aliases
     if (state.aliasDeviceId) {
-		def device = deviceFromId(state.aliasDeviceId)
+		def device = state.devices[state.aliasDeviceId]
 
+		// remove aliases which now have an empty name
 		device.aliases.removeAll { alias ->
-			def aliasName = settings."alias-name-${alias.id}"
-			!aliasName
+			!settings."alias-name-${alias.id}"
         }
 
+		// update aliases with new name(s)
        	device.aliases.each { alias ->
 			def aliasName = settings."alias-name-${alias.id}"
 //            log.debug "aliasName $aliasName alias $alias"
@@ -169,8 +165,8 @@ def pageManageDevices() {
         		device.aliases << [ id: state.newAliasId, name: newAliasName ]
 	            state.newAliasId = null
     	    }
-		    state.aliasDeviceId = null
     	}
+	    state.aliasDeviceId = null
     }
     
     if (!state.newAliasId) {
@@ -178,16 +174,18 @@ def pageManageDevices() {
     }
     
 	dynamicPage(name: "pageManageDevices", title: "Manage devices") {
-    	state.devices.each { dev ->
-    		section(dev.name) {
-            	def room = dev.groupId ? getGroup(dev.groupId).name : "<not set>"
-                def descr = dev.aliases*.name?.join("\n")
+    	def sortedDevices = state.devices as LinkedHashMap
+		sortedDevices = sortedDevices.sort { it.value.name }
+    	sortedDevices.each { deviceId, device ->
+    		section(device.name) {
+            	def room = device.groupId ? state.groups[device.groupId].name : "<not set>"
+            	paragraph "${room}", title: "ST Room"
+                def descr = device.aliases*.name?.join("\n")
 //                input name: "device-name-enabled-${dev.id}", type: "bool", title: "React to '${dev.name}'",
 //                	required: true, defaultValue: true
-                href name: "hrefDeviceAliases", title: "Edit Aliases", required: false,
-                	description: descr,
-                   	page: "pageDeviceAliases", params: [ id: dev.id, newAliasId: state.newAliasId ]
-            	paragraph "Room: ${room}"
+                href name: "hrefDeviceAliases", title: "Aliases (tap to edit)", required: false,
+                	description: descr, state: "complete",
+                   	page: "pageDeviceAliases", params: [ id: deviceId, newAliasId: state.newAliasId ]
             }
         }
     }
@@ -195,7 +193,7 @@ def pageManageDevices() {
 
 def pageDeviceAliases(params) {
 	log.debug "pageDeviceAliases params: $params"
-    def dev = deviceFromId(params.id)
+    def dev = state.devices[params.id]
     //log.debug "pageDeviceAliases dev: $dev"
     state.aliasDeviceId = params.id
     
@@ -207,7 +205,7 @@ def pageDeviceAliases(params) {
 //    }
     
     log.debug "dev: $dev"
-    def allAliases = dev.aliases?.name
+//    def allAliases = dev.aliases*.name
     
 	dynamicPage(name: "pageDeviceAliases", title: "Aliases for device '${dev.name}'") {
     	section {
@@ -239,7 +237,7 @@ def pageAbout() {
 	   	section {
     		paragraph "${textAppName()} ${textAppVersion()}\n${textCopyright()}"
 	    }
-        section("Apache License") {
+        section("GPLv3 License") {
         	paragraph "${textLicense()}"
         }
         section("Instructions") {
@@ -278,16 +276,7 @@ def initialize() {
 	// TODO: subscribe to attributes, devices, locations, etc.
     log.info "initialize"
 
-	if (!state.devices) {
-    	state.devices = []
-    }
-	if (!state.groups) {
-    	state.groups = []
-    }
-    state.devices = []
-    state.groups = []
-
-	updateDevices()
+  	//updateDevices()
     updateGroups()
     
     // FIXME, those don't seem to actually work
@@ -297,145 +286,168 @@ def initialize() {
 }
 
 def deviceUpdatesHandler(evt) {
-	// FIXME, do something
-	log.debug "deviceUpdatesHandler: evt $evt"
+	log.debug "deviceUpdatedHandler: name $evt.name value $evt.value isStateChange: ${evt.isStateChange()} data $evt.data deviceId $evt.deviceId"
+    def data = evt.data
+    if (data instanceof String) {
+    	data = parseJson(data)
+    }
+    switch(evt.name) {
+    	case "DeviceUpdated":
+	    	updateDevice(id: evt.deviceId, name: data.label, groupId: data.groupId)
+            break
+        case "DeviceCreated":
+        	log.warn "deviceUpdatesHandler: new device $evt.deviceId data $data needs to be authorized to be usable."
+            break
+        case "DeviceDeleted":
+        	log.warn "TBD"
+            break
+    }
 }
 
 def stDeviceFromId(deviceId) {
 	return switches.find { it.id == deviceId }
 }
 
-def deviceFromId(deviceId) {
-	return state.devices.find { it.id == deviceId }
-}
-
-def deviceName(deviceId) {
-	return deviceFromId(deviceId).name
-}
-
-def getGroup(groupId) {
-	return state.groups.find {it.id == groupId }
-}
-
 def getOrCreateGroup(groupId) {
 	if (!groupId) {
     	return null
     }
-	def group = getGroup(groupId)
+	def group = state.groups[groupId]
     if (!group) {
-    	group = [id: groupId, name: "group-$groupId", devices: []]
-        state.groups << group
+    	group = [name: "group-$groupId", devices: []]
+        state.groups[groupId] = group
     }
     group
 }
 
-def groupName(groupId) {
-	return getGroup(groupId).name
-}
-
 def updateGroupDevicesFromSettings() {
-    state.groups.each { group ->
-		def selectedDevices = settings."group-devices-${group.id}"
-        if (selectedDevices) {
-        	def selected = selectedDevices.collect { deviceName ->
-               	state.devices.find { it.name == deviceName }
-            }
-            log.debug "group.devices $group.devices --- selected $selected*.id"
-            if (group.devices != selected*.id) {
-            	def prevDevices = group.devices.collect { deviceFromId(it).name }
-            	log.debug "updateGroupDevicesFromSettings: group ${group.name}: ${prevDevices} -> ${selected*.name}"
-	            group.devices = selected*.id
+    state.groups.each { groupId, group ->
+		def selectedIds = settings."group-devices-${groupId}"
+        if (selectedIds) {
+            log.debug "group.devices $group.devices --- selected $selectedIds"
+            if (group.devices != selectedIds) {
+            	def prevDevices = group.devices.collect { state.devices[it]?.name }
+                def newDevices = selectedIds.collect { state.devices[it]?.name }
+            	log.info "updateGroupDevicesFromSettings: group ${group.name}: ${prevDevices} -> ${newDevices}"
+	            group.devices = selectedIds
             }
         }
     }
 }
 
 def updateGroupNamesFromSettings() {
-	state.groups.each { group ->
-        def name = settings."group-name-${group.id}"
+	state.groups.each { groupId, group ->
+        def name = settings."group-name-${groupId}"
         if (name && group.name != name) {
-        	log.debug "updateGroupNamesFromSettings: group name ${group.name} -> ${name}"
+        	log.info "updateGroupNamesFromSettings: group name ${group.name} -> ${name}"
 	        group.name = name
         }
     }
 }
 
 def deleteDevice(id) {
-	log.info "deleteDevice: deleting ${deviceFromId(id).name} $id"
+	log.info "deleteDevice: deleting ${state.devices[id].name} $id"
 	// remove the from state.devices
-    state.devices.removeAll { device -> device.id == id }
+    state.devices.remove(id)
 	// also remove them from groups that referenced them
-    state.groups.each { group->
+    state.groups.each { groupId, group ->
     	group.devices.removeAll { it == id }
+        // if we just removed the last device in the group, delete it
+        if (!group.devices) {
+            state.groups.remove(groupId)
+        }
     }
 }
 
 def addDevice(stDevice) {
 	log.info "addDevice: adding $stDevice.displayName $stDevice.id"
     def device = [
-    	id: stDevice.id,
         name: stDevice.displayName,
-        groupId: stDevice.device.groupId
+        groupId: stDevice.device.groupId,
+        aliases: [[id: UUID.randomUUID().toString(), name: stDevice.displayName]] // FIXME toString nec?
     ]
-	state.devices << device
+    state.devices[stDevice.id] = device
+    log.debug "addDevice: groupId $device.groupId"
     if (device.groupId) {
 		def group = getOrCreateGroup(device.groupId)
-        if (group.devices.contains(device.id)) {
-        	log.warn "group.devices: $group.devices --- device $device.id"
+        log.debug "addDevice: group $group"
+        if (group.devices.contains(stDevice.id)) {
+        	log.warn "addDevice: group.devices: $group.devices --- device $stDevice.id"
+        } else {
+			group.devices << stDevice.id
         }
-		group.devices << device.id
     }
 }
 
-def updateDevice(stDevice) {
-	log.debug "updateDevice: updating $stDevice.displayName $stDevice.id"
-    def device = state.devices.find { it.id == stDevice.id }
-
-	if (device.name != stDevice.displayName) {
-    	log.info "renaming $device.name -> $stDevice.displayName"
-	    device.name = stDevice.displayName
+def updateDevice(info) {
+	log.debug "updateDevice: updating $info.name $info.id"
+    def device = state.devices[info.id]
+    if (!device) {
+    	// if it's not an authorized device, we don't care...
+        // (this happens if we get called from the DeviceUpdated event)
+    	return
     }
-    def newGroupId = stDevice.device.groupId
-    if (device.groupId != newGroupId) {
-    	log.info "changing device $curDevice.name groupId $curDevice.groupId -> $device.device.groupId"
-        def OrigGroup = getGroup(device.groupId)
-        def inOrigGroup = OrigGroup?.devices?.contains(device.id)
-        if (inOrigGroup || (newGroupId && !getGroup(newGroupId))) {
+
+	if (device.name != info.name) {
+    	log.info "renaming $device.name -> $info.name"
+        // Also change principal alias if it's still the original device name
+        if (device.aliases[0]?.name == device.name) {
+        	device.aliases[0].name = info.name
+        }
+	    device.name = info.name
+    }
+    if (device.groupId != info.groupId) {
+    	log.info "changing device $device.name groupId $device.groupId -> $info.groupId"
+        def origGroup = state.groups[device.groupId]
+        def inOrigGroup = origGroup?.devices?.contains(info.id)
+        if (!device.groupId || inOrigGroup || (info.groupId && !state.groups[info.groupId])) {
     	    // only add to new group if it still was in the original group
 	        // (that is, the user hadn't used preference to remove it from that group,
         	// as far as this app is concerned), or if the newGroup is new to us
-            def newGroup = getOrCreateGroup(newGroupId)
-            if (!newGroup.devices.contains(device.id)) {
-		        newGroup.devices << device.id
+            def newGroup = getOrCreateGroup(info.groupId)
+            if (newGroup) {
+	            if (!newGroup.devices.contains(info.id)) {
+	            	log.info "adding device $device.name to group $newGroup.name"
+			        newGroup.devices << info.id
+                }
             }
         }
 	    // remove from original group (if in there)
-	    origGroup?.devices?.removeAll { it == device.id }
+        if (origGroup?.devices?.contains(info.id)) {
+        	log.info "removing device $device.name from group $origGroup.name"
+		    origGroup?.devices?.removeAll { it == info.id }
+        }
         // update groupId
-	    device.groupId = newGroupId
+	    device.groupId = info.groupId
     }
 }
 
-def updateDevices() {
+def updateDevicesFromSettings() {
+	if (!state.devices) {
+    	state.devices = [:]
+    }
+    if (!state.groups) {
+    	state.groups = [:]
+    }
 	// first, see whether devices have been removed
 	def newDeviceIds = switches*.id
-    def curDeviceIds = state.devices*.id
+    def curDeviceIds = state.devices*.key
     def delDeviceIds = curDeviceIds - newDeviceIds
 
 	// delDeviceIds contains the ids of those devices that have been removed
     delDeviceIds.each {	deleteDevice(it) }
 
-	switches.each { device ->
-    	if (state.devices*.id.contains(device.id)) {
-        	updateDevice(device)
+	switches.each { stDevice ->
+    	if (state.devices[stDevice.id]) {
+        	updateDevice(id: stDevice.id, name: stDevice.displayName, groupId: stDevice.device.groupId)
         } else {
-        	addDevice(device)
+        	addDevice(stDevice)
         }
     }
     
     // debug log
-	// state.devices.each { dev ->
-	//     log.debug "DEVICE name: $dev.name id: $dev.id groupId: $dev.groupId"
+	// state.devices.each { deviceId, device ->
+	//     log.debug "DEVICE name: $device.name id: $deviceId groupId: $device.groupId"
 	// }
 }
 
@@ -472,29 +484,29 @@ def guessRoomName(strs) {
 
 def updateGroups() {
 	// guess room names from the devices in the room
-    state.groups.each { group ->
-    	def inputName = settings."group-name-${group.id}"
+    state.groups.each { groupId, group ->
+    	def inputName = settings."group-name-$groupId"
     	if (inputName) {
         	if (group.name != inputName) {
-	        	log.warn "updateGroups: updating ${group.name} -> ${inputName}, id ${group.id}"
+	        	log.warn "updateGroups: updating ${group.name} -> ${inputName}, id ${groupId}"
     	    	group.name = inputName
             }
         } else {
-        	if (group.name == "group-$group.id") {
-	    		def deviceNames = group.devices.collect { deviceFromId(it).name }
+        	if (group.name == "group-$groupId") {
+	    		def deviceNames = group.devices.collect { state.devices[it].name }
 	        	def guessedName = guessRoomName(deviceNames)
                 if (guessedName) {
                 	group.name = guessedName
-	                log.debug "updateGroups: guessed ${group.name}, id ${group.id}"
+	                log.debug "updateGroups: guessed ${group.name}, id ${groupId}"
                 }
             }
         }
     }
 
 	// debug log
-   	 state.groups.each { group ->
+   	 state.groups.each { groupId, group ->
 		def deviceNames = group.devices.collect { deviceId -> stDeviceFromId(deviceId).displayName }
-    	log.debug "GROUP name: $group.name groupId: $group.id devices: $deviceNames"
+    	log.debug "GROUP name: $group.name groupId: $groupId devices: $deviceNames"
     }
 }
 
@@ -557,23 +569,15 @@ def apiAiResponseHandler(response, data) {
 def newSession(sessionId) {
 	//log.debug("newSession sessionId: $sessionId")
     def entities = [[name: "st_dimmer", devices: dimmers]]
-    def userEntities = entities.collect { entity ->
-        [
-            sessionId: sessionId,
-        	name: entity.name,
-        	extend: false,
-            entries: entity.devices.collect {
-        		[value: it.displayName, synonyms: [it.displayName]]
-        	}
-     	]
-    }
-    userEntities << [
+    def userEntities = []
+
+	userEntities << [
     	sessionId: sessionId,
         name: "st_switch",
         extend: false,
         // FIXME, should only do this for devices with capability switch
-        entries: state.devices.collect { dev ->
-        	[ value: dev.id, synonyms: dev.aliases*.name ]
+        entries: state.devices.collect { deviceId, device ->
+        	[ value: deviceId, synonyms: device.aliases*.name ]
         }
     ]
     
@@ -642,8 +646,8 @@ def listSwitchesREST() {
 //	}
 
 	// FIXME, for switches only
-	state.devices.each { device ->
-    	def stDevice = stDeviceFromId(device.id)
+	state.devices.each { deviceId, device ->
+    	def stDevice = stDeviceFromId(deviceId)
 		speech += device.name + " is " + stDevice.currentValue("switch") + ". ";
 	}
 
@@ -670,15 +674,16 @@ private def textCopyright() {
 }
 
 private def textLicense() {
-	"Licensed under the Apache License, Version 2.0 (the 'License'); " +
-	"you may not use this file except in compliance with the License. " +
-	"You may obtain a copy of the License at" +
+	"This program is free software: you can redistribute it and/or modify " +
+	"it under the terms of the GNU General Public License as published by " +
+	"the Free Software Foundation, either version 3 of the License, or " +
+	"(at your option) any later version." +
 	"\n\n" +
-	"    http://www.apache.org/licenses/LICENSE-2.0" +
+	"This program is distributed in the hope that it will be useful, " +
+	"but WITHOUT ANY WARRANTY; without even the implied warranty of " +
+	"MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the " +
+	"GNU General Public License for more details." +
 	"\n\n" +
-	"Unless required by applicable law or agreed to in writing, software " +
-	"distributed under the License is distributed on an 'AS IS' BASIS, " +
-	"WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. " +
-	"See the License for the specific language governing permissions and " +
-	"limitations under the License."
+	"You should have received a copy of the GNU General Public License " +
+	"along with this program.  If not, see <http://www.gnu.org/licenses/>."
 }
