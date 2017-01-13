@@ -103,13 +103,12 @@ def pageDiscovery() {
 
 	ssdpSubscribe()
 
-	// discovery request every 15 seconds
 	if ((refreshCount % 5) == 0) {
+		// discovery request every 15 seconds
 		ssdpDiscover()
-	}
-
-	// device description request otherwise every 3 seconds
-	if ((refreshCount % 5) != 0) {
+	} else {
+		// device description request every 3 seconds, except when
+	    // doing the ssdpDiscover
 		verifyDevices()
 	}
 
@@ -192,7 +191,8 @@ def updated() {
 
 def initialize() {
 	log.debug "initialize"
-    
+
+	addDevices()
 //    state.devices = [:]
 //	state._devices = [
 //    	[
@@ -204,7 +204,7 @@ def initialize() {
 //    ]
 
 	// FIXME, always starting over 
-	childDevices.each { deleteChildDevice(it.deviceNetworkId) }
+//	childDevices.each { deleteChildDevice(it.deviceNetworkId) }
 
 //	state._devices.each { device ->
 //    	def existingDevice = getChildDevice(device.dni)
@@ -214,12 +214,25 @@ def initialize() {
 //            	[name: "Chromecast", label: device.name, completedSetup: true])
 //        }
 //    }
+}
 
-	// we're using ssdpDiscover() to discover DIAL devices, even though for Chromecast v2,
-    // one should use MDNS, but that's not supported. The Chromecasts still respond, so this
-    // works, we just have to be aware that none-Chromecast DIAL devices respond as well.
-//    subscribe(location, "ssdpTerm.urn:dial-multiscreen-org:service:dial:1", ssdpHandler)
-//    ssdpDiscover()
+def addDevices() {
+	def devices = getVerifiedDevices()
+    devices.each { uuid, device ->
+    	if (!(uuid in settings.selectedDevices)) {
+        	return
+        }
+
+		log.debug "addDevices $uuid $device"
+        def child = getChildDevice(uuid)
+        log.debug "addDevice child $child"
+        if (!child) {
+        	addChildDevice(app.namespace, "chromecast", uuid, null,
+                [name: device.modelName, label: device.name, completedSetup: true])
+        } else {
+        	// FIXME needs update?
+        }
+    }
 }
 
 def getDevices() {
@@ -329,25 +342,144 @@ private convertHexToInt(hex) {
 }
 
 def playMedia(child, media) {
-	log.debug "playMedia $child.device.deviceNetworkId $media"
-    def device = getDevices.find { it.dni == child.device.deviceNetworkId }
+    def uuid = child.device.deviceNetworkId
+	log.debug "playMedia uuid $uuid $media"
+    //def device = getDevices()[uuid]
     
 	def body = [
-    	host: device.host,
-        port: device.port,
+    	host: settings."remoteIP-${uuid}",
+        port: settings."remoteWebSocket-${uuid}",
     	media: media
+    ]
+    def params = [
+    	uri: settings.restHost + "/playMedia",
+        body: body
+    ]
+    log.debug "params: $params"
+
+	asynchttp_v1.post(responseHandler, params,
+    	[uuid: uuid, event: [status: "playing"]])
+}
+
+def stop(child) {
+    def uuid = child.device.deviceNetworkId
+	log.debug "stop uuid $uuid"
+    
+	def body = [
+    	host: settings."remoteIP-${uuid}",
+        port: settings."remoteWebSocket-${uuid}"
+    ]
+    def params = [
+    	uri: settings.restHost + "/stop",
+        body: body
+    ]
+    log.debug "params: $params"
+
+	asynchttp_v1.post(responseHandler, params,
+    	[uuid: uuid, event: [status: "stopped"]])
+}
+
+def doPause(child) {
+    def uuid = child.device.deviceNetworkId
+	log.debug "pause uuid $uuid"
+    
+	def body = [
+    	host: settings."remoteIP-${uuid}",
+        port: settings."remoteWebSocket-${uuid}"
+    ]
+    def params = [
+    	uri: settings.restHost + "/pause",
+        body: body
+    ]
+    log.debug "params: $params"
+
+	asynchttp_v1.post(responseHandler, params,
+    	[uuid: uuid, event: [status: "paused"]])
+}
+
+def play(child) {
+    def uuid = child.device.deviceNetworkId
+	log.debug "play uuid $uuid"
+    
+	def body = [
+    	host: settings."remoteIP-${uuid}",
+        port: settings."remoteWebSocket-${uuid}"
     ]
     def params = [
     	uri: settings.restHost + "/play",
         body: body
     ]
+    log.debug "params: $params"
 
-	asynchttp_v1.post(responseHandler, params)
+	asynchttp_v1.post(responseHandler, params,
+    	[uuid: uuid, event: [status: "playing"]])
 }
 
-def responseHandler(response, data) {
-	log.debug "response.data: ${response?.data}"
-    if (response.hasError()) {
-		log.error "responseHandler: ${response.getErrorMessage()} (${response?.data})"
+def setVolume(child, volume) {
+    def uuid = child.device.deviceNetworkId
+	log.debug "setVolume uuid $uuid"
+    
+	def body = [
+    	host: settings."remoteIP-${uuid}",
+        port: settings."remoteWebSocket-${uuid}",
+        volume: volume
+    ]
+    def params = [
+    	uri: settings.restHost + "/volume",
+        body: body
+    ]
+    log.debug "params: $params"
+
+	asynchttp_v1.post(responseHandler, params, [uuid: uuid])
+}
+
+def refresh(child) {
+    def uuid = child.device.deviceNetworkId
+	log.debug "refresh uuid $uuid"
+    
+	def body = [
+    	host: settings."remoteIP-${uuid}",
+        port: settings."remoteWebSocket-${uuid}",
+    ]
+    def params = [
+    	uri: settings.restHost + "/status",
+        body: body
+    ]
+	asynchttp_v1.post(responseHandler, params, [uuid: uuid])
+}
+
+def responseHandler(resp, data) {
+	//log.debug "response.status: ${resp.status} data ${data}"
+    if (resp.hasError()) {
+		log.warn "responseHandler: ${resp.getErrorMessage()}"
+        return
     }
+
+	log.debug "responseHandler: ${resp.data}"
+	def child = getChildDevice(data.uuid)
+
+	def app = resp.json?.status?.applications
+    if (app) {
+	    child.generateEvent([statusText: app[0].displayName + "\n" + app[0].statusText])
+
+		def playerState = resp.json?.mediaStatus?.playerState
+		if (playerState) {
+    		def status = playerState.toLowerCase()
+	        if (status == "idle") {
+	        	status = "stopped"
+	        }
+		    child.generateEvent([status: status])
+	    }
+	} else {
+    	child.generateEvent([statusText: "Chromecast is idle"])
+    	child.generateEvent([status: "stopped"])
+    }
+    def volume = resp.json?.status?.volume
+    if (volume) {
+    	child.generateEvent([
+        	mute: volume.muted ? "muted" : "unmuted",
+        	level: (volume.level * 100.0).toInteger()
+    	])
+    }
+    
 }
