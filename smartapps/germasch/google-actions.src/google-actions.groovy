@@ -21,6 +21,7 @@
 // TODO:
 // update icons
 // think about how to best name this app
+// API.AI: fix privacy policy link
 
 include "asynchttp_v1"
 
