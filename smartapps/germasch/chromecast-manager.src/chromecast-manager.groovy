@@ -43,24 +43,23 @@ preferences {
 }
 
 def pageMain() {
-    app.updateSetting("selectedHue", null)
     state.refreshCount = 0
     def devices = getDevices()
 	def selectedDevices = settings.selectedDevices ?: [:]
-    def restSetUp = settings.restHost
+    def restSetUp = settings.restHost || settings.restLocalIP
     def install = selectedDevices && restSetUp
     // FIXME, uninstall
     
     dynamicPage(name: "pageMain", title: "", install: install) {
-	    section("Chromecast Discovery") {
-        	href "pageDiscovery", title: "Discovery", 
-            	description: "Tap here to discover and select Chromecasts",
-            	state: selectedDevices ? "complete" : "incomplete"
-        }
         section("Settings") {
         	href "pageSettings", title: "Webservice Settings",
             	description: "Tap here to configure the webservice server",
                 state: restSetUp ? "complete" : "incomplete"
+        }
+	    section("Chromecast Discovery") {
+        	href "pageDiscovery", title: "Discovery", 
+            	description: "Tap here to discover and select Chromecasts",
+            	state: selectedDevices ? "complete" : "incomplete"
         }
         section("Configure Chromecasts", hideWhenEmpty: true) {
            	selectedDevices.each { uuid ->
@@ -133,10 +132,21 @@ def pageDiscoveryFailed() {
 
 def pageSettings() {
 	dynamicPage(name: "pageSettings", title: "Webservice Settings") {
-    	section("SmartThings needs a webservice that forwards the communication " +
-            "from SmartThings to the Chromecast and vice versa. Please enter its URI " + 
-            "below, e.g.: https://pure-atoll-25146.herokuapp.com") {
-    		input "restHost", "text", title: "URI of REST Service", required: true
+    	section("Chromecast support needs an intermediary webservice that forwards the communication " +
+            "from SmartThings to the Chromecast and vice versa. You have two options:\n" +
+            "(1) You can run this on your local network (which needs a device like a " +
+            "Raspberry Pi or a PC to run the node.js service on), or " +
+            "(2) remotely in the cloud (in that case, you have to make your Chromecasts " +
+            "remotely accessible by forwarding their access ports.") {
+        	input "localWebservice", "bool", title: "Use webservice on local LAN", 
+            	required: true, submitOnChange: true
+            if (settings.localWebservice) {
+            	input "restLocalIP", "text", title: "IP of local Webservice", required: true
+                input "restLocalPort", "number", title: "Port of local Webservice", required: true, defaultValue: 8080
+            } else {
+	    		input "restHost", "text", title: "URI of REST Service", required: true,
+                	defaultValue: "https://my-app.herokuapp.com"
+            }
         }
     }
 }
@@ -158,10 +168,12 @@ def pageChromecast(params) {
 //            input "localWebSocket-${uuid}", "number", title: "Local Websocket",
 //            	required: true, defaultValue: device.port + 1
         }
-        section("Remote Access") {
-        	input "remoteIP-${uuid}", "text", title: "Remote IP", required: true
-            input "remoteWebSocket-${uuid}", "number", title: "Remote Websocket",
-            	required: true, defaultValue: device.port + 1
+        if (!settings.localWebservice) {
+	        section("Remote Access") {
+    	    	input "remoteIP-${uuid}", "text", title: "Remote IP", required: true
+        	    input "remoteWebSocket-${uuid}", "number", title: "Remote Websocket",
+            		required: true, defaultValue: device.port + 1
+            }
         }
     }
 }
@@ -193,27 +205,6 @@ def initialize() {
 	log.debug "initialize"
 
 	addDevices()
-//    state.devices = [:]
-//	state._devices = [
-//    	[
-//        	host: castHost,
-//            port: castPort,
-//        	dni: castHost + (castPort ? (":" + castPort) : ""),
-//        	name: castName,
-//		]            
-//    ]
-
-	// FIXME, always starting over 
-//	childDevices.each { deleteChildDevice(it.deviceNetworkId) }
-
-//	state._devices.each { device ->
-//    	def existingDevice = getChildDevice(device.dni)
-//       	if (existingDevice) log.warn "existingDevice $existingDevice"
-//        if (!existingDevice) {
-//        	def childDevice = addChildDevice(app.namespace, "Chromecast", device.dni, null,
-//            	[name: "Chromecast", label: device.name, completedSetup: true])
-//        }
-//    }
 }
 
 def addDevices() {
@@ -341,111 +332,54 @@ private convertHexToInt(hex) {
 	Integer.parseInt(hex, 16)
 }
 
-def playMedia(child, media) {
+def post(child, path, body=[:]) {
     def uuid = child.device.deviceNetworkId
-	log.debug "playMedia uuid $uuid $media"
-    //def device = getDevices()[uuid]
-    
-	def body = [
-    	host: settings."remoteIP-${uuid}",
-        port: settings."remoteWebSocket-${uuid}",
-    	media: media
-    ]
-    def params = [
-    	uri: settings.restHost + "/playMedia",
+    body.uuid = uuid
+
+	if (settings.localWebservice) {
+		def device = getDevices()[uuid]
+		body << [
+    		host: device.ip,
+        	port: device.port + 1, // FIXME
+		]
+    } else {
+		body << [
+    		host: settings."remoteIP-${uuid}",
+        	port: settings."remoteWebSocket-${uuid}"
+		]
+    }
+
+	def params = [
+    	uri: settings.restHost + path,
         body: body
     ]
-    log.debug "params: $params"
 
-	asynchttp_v1.post(responseHandler, params,
-    	[uuid: uuid, event: [status: "playing"]])
+	log.debug "post: path: $path params: $params"
+
+	if (settings.localWebservice) {
+		sendHubCommand(new physicalgraph.device.HubAction(
+        	[
+				method: "POST",
+				path: path,
+				headers: [
+					HOST: settings.restLocalIP + ":" + restLocalPort,
+				],
+	            body: body
+            ],
+            null, [callback: "localResponseHandler"]))
+    
+    } else {
+		asynchttp_v1.post(responseHandler, params, [uuid: uuid])
+    }
 }
 
-def stop(child) {
-    def uuid = child.device.deviceNetworkId
-	log.debug "stop uuid $uuid"
-    
-	def body = [
-    	host: settings."remoteIP-${uuid}",
-        port: settings."remoteWebSocket-${uuid}"
-    ]
-    def params = [
-    	uri: settings.restHost + "/stop",
-        body: body
-    ]
-    log.debug "params: $params"
-
-	asynchttp_v1.post(responseHandler, params,
-    	[uuid: uuid, event: [status: "stopped"]])
-}
-
-def doPause(child) {
-    def uuid = child.device.deviceNetworkId
-	log.debug "pause uuid $uuid"
-    
-	def body = [
-    	host: settings."remoteIP-${uuid}",
-        port: settings."remoteWebSocket-${uuid}"
-    ]
-    def params = [
-    	uri: settings.restHost + "/pause",
-        body: body
-    ]
-    log.debug "params: $params"
-
-	asynchttp_v1.post(responseHandler, params,
-    	[uuid: uuid, event: [status: "paused"]])
-}
-
-def play(child) {
-    def uuid = child.device.deviceNetworkId
-	log.debug "play uuid $uuid"
-    
-	def body = [
-    	host: settings."remoteIP-${uuid}",
-        port: settings."remoteWebSocket-${uuid}"
-    ]
-    def params = [
-    	uri: settings.restHost + "/play",
-        body: body
-    ]
-    log.debug "params: $params"
-
-	asynchttp_v1.post(responseHandler, params,
-    	[uuid: uuid, event: [status: "playing"]])
-}
-
-def setVolume(child, volume) {
-    def uuid = child.device.deviceNetworkId
-	log.debug "setVolume uuid $uuid"
-    
-	def body = [
-    	host: settings."remoteIP-${uuid}",
-        port: settings."remoteWebSocket-${uuid}",
-        volume: volume
-    ]
-    def params = [
-    	uri: settings.restHost + "/volume",
-        body: body
-    ]
-    log.debug "params: $params"
-
-	asynchttp_v1.post(responseHandler, params, [uuid: uuid])
-}
-
-def refresh(child) {
-    def uuid = child.device.deviceNetworkId
-	log.debug "refresh uuid $uuid"
-    
-	def body = [
-    	host: settings."remoteIP-${uuid}",
-        port: settings."remoteWebSocket-${uuid}",
-    ]
-    def params = [
-    	uri: settings.restHost + "/status",
-        body: body
-    ]
-	asynchttp_v1.post(responseHandler, params, [uuid: uuid])
+def localResponseHandler(resp) {
+	log.debug "localResponseHandler status ${resp?.status} json ${resp?.json}"
+    if (resp?.status < 200 || resp?.status > 299) {
+    	log.warn "Error from webservice: status ${resp.status} json ${resp.json}"
+        return
+    }
+    handleResponse(resp.json.uuid, resp.json)
 }
 
 def responseHandler(resp, data) {
@@ -456,13 +390,26 @@ def responseHandler(resp, data) {
     }
 
 	log.debug "responseHandler: ${resp.data}"
-	def child = getChildDevice(data.uuid)
+    assert data.uuid == resp.json?.uuid
+    handleResponse(data.uuid, resp.json)
+}
 
-	def app = resp.json?.status?.applications
+def handleResponse(uuid, json){
+	def child = getChildDevice(uuid)
+
+	def app = json?.status?.applications
     if (app) {
-	    child.generateEvent([statusText: app[0].displayName + "\n" + app[0].statusText])
+    	def statusText = app[0].statusText;
+        def metadata = json?.mediaStatus?.media?.metadata
+        if (metadata?.metadataType == 0) { // Generic
+        	statusText += "\n" + metadata.title
+        } else if (metadata?.metadataType == 3) { // MusicTrack
+        	statusText += "\n" + metadata.title + "\n" + metadata.artist
+        }
+        
+	    child.generateEvent([statusText: statusText])
 
-		def playerState = resp.json?.mediaStatus?.playerState
+		def playerState = json?.mediaStatus?.playerState
 		if (playerState) {
     		def status = playerState.toLowerCase()
 	        if (status == "idle") {
@@ -474,12 +421,40 @@ def responseHandler(resp, data) {
     	child.generateEvent([statusText: "Chromecast is idle"])
     	child.generateEvent([status: "stopped"])
     }
-    def volume = resp.json?.status?.volume
+    def volume = json?.status?.volume
     if (volume) {
     	child.generateEvent([
         	mute: volume.muted ? "muted" : "unmuted",
         	level: (volume.level * 100.0).toInteger()
     	])
     }
-    
 }
+
+def playMedia(child, media) {
+    post(child, "/playMedia", [media: media])
+}
+
+def stop(child) {
+    post(child, "/stop")
+}
+
+def doPause(child) {
+    post(child, "/pause")
+}
+
+def play(child) {
+    post(child, "/play")
+}
+
+def setVolume(child, volume) {
+    post(child, "/volume", [volume: volume])
+}
+
+def queueUpdate(child, update) {
+    post(child, "/queueUpdate", [update: update])
+}
+
+def refresh(child) {
+    post(child, "/status")
+}
+
